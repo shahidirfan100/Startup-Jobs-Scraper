@@ -8,6 +8,12 @@ Extract remote job listings from **Startup.jobs** - the leading job board for st
 
 Startup Jobs Scraper automatically extracts job listings from Startup.jobs, providing structured data ready for analysis, integration, or personal job tracking.
 
+### How It Works (Production Strategy)
+
+- **1) Internal JSON API (fastest)**: Attempts to fetch listings directly from Startup.jobs internal API endpoints (HTTP + JSON parse).
+- **2) Pure HTML + JSON-LD (fallback)**: If API access is limited, fetches HTML and parses embedded `application/ld+json` job data.
+- **3) Stealth Playwright escalation**: If HTTP requests are blocked (e.g., Cloudflare), uses Playwright to obtain a valid session/cookies and discover the actual internal API calls, then continues with JSON parsing.
+
 ### Key Capabilities
 
 - **Remote Job Focus** - Specialized for remote and distributed work opportunities
@@ -203,6 +209,7 @@ GET https://api.apify.com/v2/datasets/{datasetId}/items
 - Enable Apify Proxy with residential IP groups
 - Reduce concurrency to minimize detection
 - Consider running during off-peak hours
+- If Cloudflare blocks HTTP, Playwright fallback will automatically bootstrap cookies; for best reliability, use residential proxies.
 
 ---
 

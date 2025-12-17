@@ -1,6 +1,66 @@
 {
   "actorSpecification": 1,
-  "fields": {},
+  "fields": {
+    "id": {
+      "type": "string",
+      "title": "ID",
+      "description": "Unique job identifier (from API or derived from URL)."
+    },
+    "title": {
+      "type": "string",
+      "title": "Job Title"
+    },
+    "company": {
+      "type": "string",
+      "title": "Company"
+    },
+    "location": {
+      "type": "string",
+      "title": "Location"
+    },
+    "job_type": {
+      "type": "string",
+      "title": "Job Type"
+    },
+    "salary": {
+      "type": "string",
+      "title": "Salary"
+    },
+    "posted_at": {
+      "type": "string",
+      "title": "Posted At",
+      "description": "Date posted (string as provided by the site / JSON-LD)."
+    },
+    "apply_link": {
+      "type": "string",
+      "title": "Apply Link"
+    },
+    "description_text": {
+      "type": "string",
+      "title": "Description (Text)"
+    },
+    "description_html": {
+      "type": "string",
+      "title": "Description (HTML)"
+    },
+    "company_logo": {
+      "type": "string",
+      "title": "Company Logo"
+    },
+    "url": {
+      "type": "string",
+      "title": "Job URL"
+    },
+    "source": {
+      "type": "string",
+      "title": "Source",
+      "description": "Extraction path that produced the record (api, api-discovered, html-listing, playwright, etc)."
+    },
+    "fetched_at": {
+      "type": "string",
+      "title": "Fetched At"
+    }
+  },
   "views": {
     "overview": {
       "title": "Overview",
