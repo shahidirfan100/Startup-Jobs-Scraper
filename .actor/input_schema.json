@@ -1,0 +1,90 @@
+{
+  "title": "Startup Jobs Scraper",
+  "description": "Extract remote job listings from Startup.jobs - Get comprehensive job data from startups and tech companies worldwide.",
+  "type": "object",
+  "schemaVersion": 1,
+  "properties": {
+    "startUrl": {
+      "title": "Start URL",
+      "type": "string",
+      "description": "Custom Startup.jobs URL to scrape. If set, overrides other search parameters.",
+      "editor": "textfield",
+      "example": "https://startup.jobs/remote-jobs?w=remote&q=engineer"
+    },
+    "keyword": {
+      "title": "Search Keywords",
+      "type": "string",
+      "description": "Job title or skills to search (e.g., 'software engineer', 'product manager').",
+      "editor": "textfield",
+      "prefill": "",
+      "default": "",
+      "example": "software engineer"
+    },
+    "location": {
+      "title": "Location Filter",
+      "type": "string",
+      "description": "Location filter. Default is 'Remote' for remote jobs.",
+      "editor": "textfield",
+      "prefill": "Remote",
+      "default": "Remote",
+      "example": "Remote"
+    },
+    "collectDetails": {
+      "title": "Collect Full Job Details",
+      "type": "boolean",
+      "description": "Visit each job detail page to extract complete descriptions and additional information.",
+      "editor": "checkbox",
+      "default": true,
+      "prefill": true
+    },
+    "results_wanted": {
+      "title": "Maximum Jobs to Extract",
+      "type": "integer",
+      "description": "Maximum number of job listings to collect.",
+      "minimum": 1,
+      "maximum": 500,
+      "default": 25,
+      "prefill": 25,
+      "editor": "number"
+    },
+    "max_pages": {
+      "title": "Maximum Pages",
+      "type": "integer",
+      "description": "Maximum number of result pages to process.",
+      "minimum": 1,
+      "maximum": 20,
+      "editor": "number",
+      "default": 3,
+      "prefill": 3
+    },
+    "maxConcurrency": {
+      "title": "Max Concurrency",
+      "type": "integer",
+      "description": "Maximum concurrent browser pages (1-5). Lower values are more reliable.",
+      "minimum": 1,
+      "maximum": 5,
+      "default": 2,
+      "prefill": 2,
+      "editor": "number"
+    },
+    "proxyConfiguration": {
+      "title": "Proxy Configuration",
+      "type": "object",
+      "description": "Proxy settings. Residential proxies recommended for best results.",
+      "editor": "proxy",
+      "default": {
+        "useApifyProxy": true,
+        "apifyProxyGroups": [
+          "RESIDENTIAL"
+        ]
+      },
+      "prefill": {
+        "useApifyProxy": true,
+        "apifyProxyGroups": [
+          "RESIDENTIAL"
+        ]
+      }
+    }
+  },
+  "required": []
+}

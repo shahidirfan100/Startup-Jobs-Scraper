@@ -1,0 +1,14 @@
+{
+  "keyword": "",
+  "location": "Remote",
+  "results_wanted": 25,
+  "max_pages": 3,
+  "collectDetails": true,
+  "maxConcurrency": 2,
+  "proxyConfiguration": {
+    "useApifyProxy": true,
+    "apifyProxyGroups": [
+      "RESIDENTIAL"
+    ]
+  }
+}
