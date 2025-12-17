@@ -8,11 +8,11 @@ Extract remote job listings from **Startup.jobs** - the leading job board for st
 
 Startup Jobs Scraper automatically extracts job listings from Startup.jobs, providing structured data ready for analysis, integration, or personal job tracking.
 
-### How It Works (Production Strategy)
+### How It Works (Cheap Hybrid Strategy)
 
-- **1) Internal JSON API (fastest)**: Attempts to fetch listings directly from Startup.jobs internal API endpoints (HTTP + JSON parse).
-- **2) Pure HTML + JSON-LD (fallback)**: If API access is limited, fetches HTML and parses embedded `application/ld+json` job data.
-- **3) Stealth Playwright escalation**: If HTTP requests are blocked (e.g., Cloudflare), uses Playwright to obtain a valid session/cookies and discover the actual internal API calls, then continues with JSON parsing.
+- **1) Playwright listing**: Opens the results page once and extracts job detail URLs (handles dynamic rendering / Cloudflare).
+- **2) HTTP + Cheerio details (cheap)**: Fetches each job detail page with `got-scraping` and parses JSON-LD/HTML using Cheerio.
+- **3) Playwright fallback (only when blocked)**: If a detail page is Cloudflare-blocked over HTTP, loads it in Playwright and parses the HTML.
 
 ### Key Capabilities
 
