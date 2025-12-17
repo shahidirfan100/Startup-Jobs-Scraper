@@ -75,6 +75,22 @@ const looksLikeCloudflareChallenge = ({ statusCode, headers, bodyText }) => {
     return t.includes('Just a moment...') && t.includes('/cdn-cgi/challenge-platform');
 };
 
+const looksLikeCloudflareChallengeHtml = (html) => {
+    if (!html) return false;
+    const t = String(html);
+    return t.includes('Just a moment...') && t.includes('/cdn-cgi/challenge-platform');
+};
+
+const waitForCloudflareClearance = async (page, { timeoutMs = 60000 } = {}) => {
+    const start = Date.now();
+    while (Date.now() - start < timeoutMs) {
+        const html = await page.content().catch(() => null);
+        if (html && !looksLikeCloudflareChallengeHtml(html)) return true;
+        await page.waitForTimeout(1000);
+    }
+    return false;
+};
+
 const isJobLike = (obj) => {
     if (!obj || typeof obj !== 'object') return false;
     const title = obj.title ?? obj.position ?? obj.job_title ?? obj.name;
@@ -191,6 +207,16 @@ const parseLdJsonJobPosting = (html) => {
     });
 
     return results[0] || null;
+};
+
+const parseNextDataFromHtml = (html) => {
+    const $ = cheerioLoad(html);
+    const raw = $('#__NEXT_DATA__').first().text()?.trim();
+    if (!raw) return null;
+    const parsed = tryParseJson(raw);
+    if (!parsed || typeof parsed !== 'object') return null;
+    const buildId = typeof parsed.buildId === 'string' ? parsed.buildId : null;
+    return { buildId, data: parsed };
 };
 
 const parseLdJsonItemListUrls = (html, baseUrl) => {
@@ -398,6 +424,14 @@ const playwrightFetchJson = async ({ page, url, method = 'GET', headers, bodyTex
     return parsed;
 };
 
+const playwrightTryFetchJson = async ({ page, url, method = 'GET', headers, bodyText }) => {
+    try {
+        return await playwrightFetchJson({ page, url, method, headers, bodyText });
+    } catch {
+        return null;
+    }
+};
+
 const bootstrapSessionWithPlaywright = async ({ listingUrl, proxyUrl }) => {
     const { browser, context, close } = await createPlaywrightContext({ proxyUrl });
 
@@ -442,6 +476,7 @@ const bootstrapSessionWithPlaywright = async ({ listingUrl, proxyUrl }) => {
 
         log.info(`Playwright bootstrap: opening ${listingUrl}`);
         await page.goto(listingUrl, { waitUntil: 'domcontentloaded', timeout: 90000 });
+        await waitForCloudflareClearance(page, { timeoutMs: 60000 });
 
         const start = Date.now();
         while (Date.now() - start < 5000 && candidates.length === 0) {
@@ -473,27 +508,64 @@ const fetchJobsViaPlaywrightKnownApi = async ({ listingUrl, keyword, maxPages, p
     try {
         log.info(`Playwright API mode: opening ${listingUrl}`);
         await page.goto(listingUrl, { waitUntil: 'domcontentloaded', timeout: 90000 });
+        await waitForCloudflareClearance(page, { timeoutMs: 60000 });
         await page.waitForTimeout(1500);
 
+        // Prefer Next.js data endpoint if available (often the real internal JSON source).
+        const html = await page.content().catch(() => null);
+        const next = html ? parseNextDataFromHtml(html) : null;
+        const listing = new URL(listingUrl);
+        if (next?.buildId) {
+            const allJobs = [];
+            for (let pageNumber = 1; pageNumber <= maxPages; pageNumber += 1) {
+                const nextDataUrl = new URL(`${ORIGIN}/_next/data/${next.buildId}${listing.pathname}.json`);
+                for (const [k, v] of listing.searchParams.entries()) nextDataUrl.searchParams.set(k, v);
+                nextDataUrl.searchParams.set('page', String(pageNumber));
+                if ((keyword || '').trim()) nextDataUrl.searchParams.set('q', keyword.trim());
+
+                const json = await playwrightTryFetchJson({
+                    page,
+                    url: nextDataUrl.href,
+                    headers: { accept: 'application/json, text/plain, */*' },
+                });
+
+                const jobs = json ? findJobArrayDeep(json) : null;
+                const arr = Array.isArray(jobs) ? jobs : [];
+                if (arr.length === 0) break;
+                allJobs.push(...arr);
+            }
+
+            if (allJobs.length > 0) return allJobs;
+        }
+
         const allJobs = [];
+        const candidatePaths = ['/api/jobs', '/api/jobs.json', '/api/search/jobs', '/api/job_posts', '/api/postings', '/api/v1/jobs'];
+
         for (let pageNumber = 1; pageNumber <= maxPages; pageNumber += 1) {
-            const apiUrl = new URL(`${ORIGIN}/api/jobs`);
-            const listing = new URL(listingUrl);
+            let pageJobs = null;
+            for (const path of candidatePaths) {
+                const apiUrl = new URL(`${ORIGIN}${path}`);
+                if (listing.searchParams.get('w')) apiUrl.searchParams.set('w', listing.searchParams.get('w'));
+                if ((keyword || '').trim()) apiUrl.searchParams.set('q', keyword.trim());
+                apiUrl.searchParams.set('page', String(pageNumber));
 
-            if (listing.searchParams.get('w')) apiUrl.searchParams.set('w', listing.searchParams.get('w'));
-            if ((keyword || '').trim()) apiUrl.searchParams.set('q', keyword.trim());
-            apiUrl.searchParams.set('page', String(pageNumber));
+                const json = await playwrightTryFetchJson({
+                    page,
+                    url: apiUrl.href,
+                    headers: { accept: 'application/json, text/plain, */*' },
+                });
+                if (!json) continue;
 
-            const json = await playwrightFetchJson({
-                page,
-                url: apiUrl.href,
-                headers: { accept: 'application/json, text/plain, */*' },
-            });
+                const jobs = findJobArrayDeep(json) || (Array.isArray(json) ? json : null);
+                const arr = Array.isArray(jobs) ? jobs : [];
+                if (arr.length > 0) {
+                    pageJobs = arr;
+                    break;
+                }
+            }
 
-            const jobs = findJobArrayDeep(json) || (Array.isArray(json) ? json : null);
-            const arr = Array.isArray(jobs) ? jobs : [];
-            if (arr.length === 0) break;
-            allJobs.push(...arr);
+            if (!pageJobs || pageJobs.length === 0) break;
+            allJobs.push(...pageJobs);
         }
 
         return allJobs;
@@ -507,6 +579,7 @@ const fetchDetailViaPlaywrightContext = async ({ context, url }) => {
     const page = await context.newPage();
     try {
         await page.goto(url, { waitUntil: 'domcontentloaded', timeout: 90000 });
+        await waitForCloudflareClearance(page, { timeoutMs: 20000 });
         const html = await page.content();
         return parseJobDetailFromHtml(html, url);
     } finally {
@@ -520,6 +593,7 @@ const fetchJobLinksViaPlaywrightListing = async ({ listingUrl, proxyUrl, limit }
     try {
         log.info(`Playwright HTML mode: opening ${listingUrl}`);
         await page.goto(listingUrl, { waitUntil: 'domcontentloaded', timeout: 90000 });
+        await waitForCloudflareClearance(page, { timeoutMs: 60000 });
         await page.waitForTimeout(1500);
         for (let i = 0; i < 3; i += 1) {
             await page.evaluate(() => window.scrollTo(0, document.body.scrollHeight));
@@ -943,12 +1017,20 @@ try {
     if (stats.jobsSaved < resultsWanted && (apiBlockedByCloudflare || stats.usedPlaywright)) {
         try {
             stats.usedPlaywright = true;
-            const jobs = await fetchJobsViaPlaywrightKnownApi({ listingUrl, keyword, maxPages, proxyUrl });
+            let jobs = [];
+            try {
+                jobs = await fetchJobsViaPlaywrightKnownApi({ listingUrl, keyword, maxPages, proxyUrl });
+            } catch (err) {
+                log.warning(`Playwright API mode failed: ${err.message}. Falling back to Playwright HTML mode.`);
+            }
+
             if (jobs.length) {
                 stats.usedApi = true;
                 log.info(`Playwright API mode: fetched ${jobs.length} jobs via internal API`);
                 await processRawJobs(jobs, 'api-playwright');
-            } else {
+            }
+
+            if (stats.jobsSaved < resultsWanted) {
                 const linkLimit = Math.min(resultsWanted * 3, 300);
                 const links = await fetchJobLinksViaPlaywrightListing({ listingUrl, proxyUrl, limit: linkLimit });
                 if (links.length) {
