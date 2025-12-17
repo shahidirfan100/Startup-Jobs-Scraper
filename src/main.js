@@ -329,32 +329,80 @@ const withRetries = async (label, task, { retries = 2, minDelayMs = 800 } = {}) 
     throw lastError;
 };
 
-const bootstrapSessionWithPlaywright = async ({ listingUrl, proxyUrl }) => {
+const createPlaywrightContext = async ({ proxyUrl }) => {
     const proxy = proxyUrlToPlaywrightProxy(proxyUrl);
     const browser = await chromium.launch({ headless: true, proxy });
+    const context = await browser.newContext({
+        userAgent: DEFAULT_USER_AGENT,
+        locale: 'en-US',
+        timezoneId: 'UTC',
+        viewport: { width: 1365, height: 768 },
+    });
+
+    await context.addInitScript(() => {
+        Object.defineProperty(navigator, 'webdriver', { get: () => undefined });
+        Object.defineProperty(navigator, 'languages', { get: () => ['en-US', 'en'] });
+        Object.defineProperty(navigator, 'platform', { get: () => 'Win32' });
+        window.chrome = window.chrome || { runtime: {} };
+    });
+
+    await context.route('**/*', async (route) => {
+        const type = route.request().resourceType();
+        if (['image', 'media', 'font'].includes(type)) return route.abort();
+        return route.continue();
+    });
+
+    const close = async () => {
+        await context.close().catch(() => {});
+        await browser.close().catch(() => {});
+    };
+
+    return { browser, context, close };
+};
+
+const playwrightFetchText = async ({ page, url, method = 'GET', headers, bodyText }) => {
+    const result = await page.evaluate(
+        async ({ url, method, headers, bodyText }) => {
+            const res = await fetch(url, {
+                method,
+                headers: headers || {},
+                body: bodyText || undefined,
+                credentials: 'include',
+                redirect: 'follow',
+            });
+            return {
+                status: res.status,
+                contentType: res.headers.get('content-type'),
+                text: await res.text(),
+                url: res.url,
+            };
+        },
+        { url, method, headers, bodyText },
+    );
+
+    return result;
+};
+
+const playwrightFetchJson = async ({ page, url, method = 'GET', headers, bodyText }) => {
+    const res = await playwrightFetchText({ page, url, method, headers, bodyText });
+    if (looksLikeCloudflareChallenge({ statusCode: res.status, headers: {}, bodyText: res.text })) {
+        const err = new Error(`Cloudflare challenge (browser fetch ${res.status})`);
+        err.isCloudflare = true;
+        err.statusCode = res.status;
+        throw err;
+    }
+
+    const parsed = tryParseJson(res.text);
+    if (!parsed) throw new Error(`Browser fetch returned non-JSON (${res.status}) from ${res.url}`);
+    if (res.status >= 400) throw new Error(`Browser fetch HTTP ${res.status} from ${res.url}`);
+    return parsed;
+};
+
+const bootstrapSessionWithPlaywright = async ({ listingUrl, proxyUrl }) => {
+    const { browser, context, close } = await createPlaywrightContext({ proxyUrl });
 
     try {
-        const context = await browser.newContext({
-            userAgent: DEFAULT_USER_AGENT,
-            locale: 'en-US',
-            timezoneId: 'UTC',
-            viewport: { width: 1365, height: 768 },
-        });
-
-        await context.addInitScript(() => {
-            Object.defineProperty(navigator, 'webdriver', { get: () => undefined });
-            Object.defineProperty(navigator, 'languages', { get: () => ['en-US', 'en'] });
-            Object.defineProperty(navigator, 'platform', { get: () => 'Win32' });
-            window.chrome = window.chrome || { runtime: {} };
-        });
-
         const page = await context.newPage();
-
-        await page.route('**/*', async (route) => {
-            const type = route.request().resourceType();
-            if (['image', 'media', 'font'].includes(type)) return route.abort();
-            return route.continue();
-        });
 
         const candidates = [];
         const seenCandidateUrls = new Set();
@@ -365,10 +413,12 @@ const bootstrapSessionWithPlaywright = async ({ listingUrl, proxyUrl }) => {
                 if (!url.startsWith(ORIGIN)) return;
                 const headers = response.headers();
                 const contentType = String(headers['content-type'] || '').toLowerCase();
-                if (!contentType.includes('application/json')) return;
+                const isLikelyJson = contentType.includes('json') || url.includes('/api/');
+                if (!isLikelyJson) return;
                 if (seenCandidateUrls.has(url)) return;
 
-                const json = await response.json().catch(() => null);
+                const text = await response.text().catch(() => null);
+                const json = text ? tryParseJson(text) : null;
                 if (!json) return;
 
                 const jobs = findJobArrayDeep(json);
@@ -394,7 +444,7 @@ const bootstrapSessionWithPlaywright = async ({ listingUrl, proxyUrl }) => {
         await page.goto(listingUrl, { waitUntil: 'domcontentloaded', timeout: 90000 });
 
         const start = Date.now();
-        while (Date.now() - start < 60000 && candidates.length === 0) {
+        while (Date.now() - start < 5000 && candidates.length === 0) {
             await sleep(500);
         }
 
@@ -408,12 +458,87 @@ const bootstrapSessionWithPlaywright = async ({ listingUrl, proxyUrl }) => {
             log.info(`Playwright bootstrap: detected jobs API call ${best.method} ${best.url} (${best.sampleJobs.length} items)`);
         }
 
-        await page.close();
-        await context.close();
+        await page.close().catch(() => {});
 
         return { cookieHeader, apiTemplate: best };
     } finally {
-        await browser.close();
+        await close();
+    }
+};
+
+const fetchJobsViaPlaywrightKnownApi = async ({ listingUrl, keyword, maxPages, proxyUrl }) => {
+    const { context, close } = await createPlaywrightContext({ proxyUrl });
+    const page = await context.newPage();
+
+    try {
+        log.info(`Playwright API mode: opening ${listingUrl}`);
+        await page.goto(listingUrl, { waitUntil: 'domcontentloaded', timeout: 90000 });
+        await page.waitForTimeout(1500);
+
+        const allJobs = [];
+        for (let pageNumber = 1; pageNumber <= maxPages; pageNumber += 1) {
+            const apiUrl = new URL(`${ORIGIN}/api/jobs`);
+            const listing = new URL(listingUrl);
+
+            if (listing.searchParams.get('w')) apiUrl.searchParams.set('w', listing.searchParams.get('w'));
+            if ((keyword || '').trim()) apiUrl.searchParams.set('q', keyword.trim());
+            apiUrl.searchParams.set('page', String(pageNumber));
+
+            const json = await playwrightFetchJson({
+                page,
+                url: apiUrl.href,
+                headers: { accept: 'application/json, text/plain, */*' },
+            });
+
+            const jobs = findJobArrayDeep(json) || (Array.isArray(json) ? json : null);
+            const arr = Array.isArray(jobs) ? jobs : [];
+            if (arr.length === 0) break;
+            allJobs.push(...arr);
+        }
+
+        return allJobs;
+    } finally {
+        await page.close().catch(() => {});
+        await close();
+    }
+};
+
+const fetchDetailViaPlaywrightContext = async ({ context, url }) => {
+    const page = await context.newPage();
+    try {
+        await page.goto(url, { waitUntil: 'domcontentloaded', timeout: 90000 });
+        const html = await page.content();
+        return parseJobDetailFromHtml(html, url);
+    } finally {
+        await page.close().catch(() => {});
+    }
+};
+
+const fetchJobLinksViaPlaywrightListing = async ({ listingUrl, proxyUrl, limit }) => {
+    const { context, close } = await createPlaywrightContext({ proxyUrl });
+    const page = await context.newPage();
+    try {
+        log.info(`Playwright HTML mode: opening ${listingUrl}`);
+        await page.goto(listingUrl, { waitUntil: 'domcontentloaded', timeout: 90000 });
+        await page.waitForTimeout(1500);
+        for (let i = 0; i < 3; i += 1) {
+            await page.evaluate(() => window.scrollTo(0, document.body.scrollHeight));
+            await page.waitForTimeout(1000);
+        }
+        const hrefs = await page.$$eval('a[href]', (els) => els.map((e) => e.getAttribute('href')).filter(Boolean));
+        const urls = new Set();
+        for (const href of hrefs) {
+            try {
+                const abs = new URL(href, listingUrl).href;
+                urls.add(abs);
+            } catch {
+                // ignore
+            }
+        }
+        return Array.from(urls).filter(isLikelyJobUrl).slice(0, limit);
+    } finally {
+        await page.close().catch(() => {});
+        await close();
     }
 };
 
@@ -637,6 +762,7 @@ try {
 
     let cookieHeader = null;
     let apiTemplate = null;
+    let apiBlockedByCloudflare = false;
 
     // JSON API first (fast path). If Cloudflare blocks, bootstrap cookies and discover internal API via Playwright.
     const ensureApiAccess = async () => {
@@ -738,6 +864,7 @@ try {
             }
         } catch (err) {
             if (err?.isCloudflare) {
+                apiBlockedByCloudflare = true;
                 log.warning(`API blocked by Cloudflare on page ${pageNumber}. Switching to Playwright-derived API template if available.`);
                 break;
             }
@@ -809,6 +936,49 @@ try {
                 stats.errors += 1;
                 log.warning(`HTML listing fallback failed: ${err.message}`);
             }
+        }
+    }
+
+    // Playwright-first hybrid fallback: use real browser fetch against internal API when HTTP is Cloudflare-blocked.
+    if (stats.jobsSaved < resultsWanted && (apiBlockedByCloudflare || stats.usedPlaywright)) {
+        try {
+            stats.usedPlaywright = true;
+            const jobs = await fetchJobsViaPlaywrightKnownApi({ listingUrl, keyword, maxPages, proxyUrl });
+            if (jobs.length) {
+                stats.usedApi = true;
+                log.info(`Playwright API mode: fetched ${jobs.length} jobs via internal API`);
+                await processRawJobs(jobs, 'api-playwright');
+            } else {
+                const linkLimit = Math.min(resultsWanted * 3, 300);
+                const links = await fetchJobLinksViaPlaywrightListing({ listingUrl, proxyUrl, limit: linkLimit });
+                if (links.length) {
+                    log.info(`Playwright HTML mode: found ${links.length} job URLs`);
+
+                    // In Playwright HTML mode, details are required to produce meaningful output.
+                    const { context, close } = await createPlaywrightContext({ proxyUrl });
+                    try {
+                        const tasks = links.slice(0, resultsWanted).map((u) =>
+                            limiter(async () => {
+                                if (stats.jobsSaved >= resultsWanted) return;
+                                stats.detailCalls += 1;
+                                const detail = await fetchDetailViaPlaywrightContext({ context, url: u }).catch((err) => {
+                                    stats.errors += 1;
+                                    log.warning(`Playwright detail failed for ${u}: ${err.message}`);
+                                    return null;
+                                });
+                                const job = normalizeJob({ rawJob: { url: u }, detail, source: 'html-playwright' });
+                                await pushOne(job);
+                            }),
+                        );
+                        await Promise.all(tasks);
+                    } finally {
+                        await close();
+                    }
+                }
+            }
+        } catch (err) {
+            stats.errors += 1;
+            log.warning(`Playwright API fallback failed: ${err.message}`);
         }
     }
 
