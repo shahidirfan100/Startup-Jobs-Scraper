@@ -12,6 +12,7 @@ Startup Jobs Scraper automatically extracts job listings from Startup.jobs, prov
 
 - **1) Playwright listing**: Opens the results page once and extracts job detail URLs (handles dynamic rendering / Cloudflare).
 - Only URLs matching the job pattern like `https://startup.jobs/<slug>-<id>` are collected (company pages like `/company/...` are ignored).
+- The listing uses `max_pages` pagination and stops early once `results_wanted` URLs are collected.
 - **2) HTTP + Cheerio details (cheap)**: Fetches each job detail page with `got-scraping` and parses JSON-LD/HTML using Cheerio.
 - **3) Playwright fallback (only when blocked)**: If a detail page is Cloudflare-blocked over HTTP, loads it in Playwright and parses the HTML.
 

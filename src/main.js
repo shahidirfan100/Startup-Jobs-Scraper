@@ -144,6 +144,30 @@ const extractSalaryFromLd = (jobPosting) => {
     return null;
 };
 
+const isRemoteFromLd = (jobPosting) => {
+    const t = jobPosting?.jobLocationType ?? jobPosting?.workPlaceType ?? jobPosting?.workplaceType;
+    const values = Array.isArray(t) ? t : t ? [t] : [];
+    if (values.some((v) => typeof v === 'string' && v.toLowerCase().includes('telecommute'))) return true;
+
+    const jobLocation = jobPosting?.jobLocation;
+    const places = Array.isArray(jobLocation) ? jobLocation : jobLocation ? [jobLocation] : [];
+    for (const p of places) {
+        const locality = p?.address?.addressLocality;
+        const region = p?.address?.addressRegion;
+        const country = p?.address?.addressCountry;
+        if ([locality, region, country].some((v) => typeof v === 'string' && v.trim().toLowerCase() === 'remote')) return true;
+    }
+
+    const applicant = jobPosting?.applicantLocationRequirements;
+    const applicantValues = Array.isArray(applicant) ? applicant : applicant ? [applicant] : [];
+    for (const a of applicantValues) {
+        const name = typeof a === 'string' ? a : a?.name;
+        if (typeof name === 'string' && name.trim().toLowerCase().includes('remote')) return true;
+    }
+
+    return false;
+};
+
 const extractApplyLinkFromHtml = (html, url) => {
     const $ = cheerioLoad(html);
     const href =
@@ -167,12 +191,19 @@ const parseJobDetailFromHtml = (html, url) => {
         $('meta[property="og:site_name"]').attr('content') ||
         null;
 
-    const location =
+    let location =
         ld?.jobLocation?.address?.addressLocality ||
         ld?.jobLocation?.address?.addressRegion ||
         ld?.jobLocation?.address?.addressCountry ||
         $('*[class*="location"]').first().text().trim() ||
         null;
+
+    if (!location) {
+        const locationText = $('*[class*="location"]').text() || '';
+        if (isRemoteFromLd(ld) || /\bremote\b/i.test(locationText)) {
+            location = 'Remote';
+        }
+    }
 
     const descriptionHtml =
         ld?.description ||
@@ -209,13 +240,13 @@ const jobIdFromUrl = (url) => {
     }
 };
 
-const normalizeJob = ({ url, detail, source }) => {
+const normalizeJob = ({ url, detail, source, locationHint }) => {
     const id = jobIdFromUrl(url) || url;
     return {
         id,
         title: detail?.title || null,
         company: detail?.company || null,
-        location: detail?.location || null,
+        location: detail?.location || (String(locationHint || '').trim().toLowerCase() === 'remote' ? 'Remote' : null),
         job_type: detail?.job_type || null,
         salary: detail?.salary || null,
         posted_at: detail?.posted_at || null,
@@ -316,27 +347,23 @@ const buildListingUrl = ({ startUrl, keyword, location }) => {
     return u.href;
 };
 
-const findNextListingUrl = async (page, currentUrl) => {
-    const nextHref = await page
-        .$eval('a[rel="next"]', (el) => el.getAttribute('href'))
-        .catch(() => null);
-    if (nextHref) return toAbsoluteUrl(nextHref, currentUrl);
-
-    const nextByText = await page
-        .$$eval('a[href]', (els) => {
-            const pick = els.find((el) => (el.textContent || '').trim().toLowerCase() === 'next');
-            return pick ? pick.getAttribute('href') : null;
-        })
-        .catch(() => null);
-    if (nextByText) return toAbsoluteUrl(nextByText, currentUrl);
-
+const getLocationHint = ({ inputLocation, listingUrl }) => {
+    const normalized = String(inputLocation || '').trim();
+    if (normalized) return normalized;
+    try {
+        const u = new URL(listingUrl);
+        const w = u.searchParams.get('w');
+        if (typeof w === 'string' && w.toLowerCase() === 'remote') return 'Remote';
+    } catch {
+        // ignore
+    }
     return null;
 };
 
 const withPageParam = (url, pageNumber) => {
     try {
         const u = new URL(url);
-        u.searchParams.set('page', String(pageNumber));
+        u.searchParams.set('page', String(Number(pageNumber)));
         return u.href;
     } catch {
         return url;
@@ -348,21 +375,18 @@ const fetchJobLinksViaPlaywrightListing = async ({ listingUrl, proxyUrl, limit, 
     const page = await context.newPage();
     try {
         const allUrls = new Set();
-
-        const visitedListingUrls = new Set();
-        let currentListingUrl = listingUrl;
+        let pagesWithNoNewUrls = 0;
 
         for (let pageIndex = 1; pageIndex <= maxPages; pageIndex += 1) {
-            if (visitedListingUrls.has(currentListingUrl)) break;
-            visitedListingUrls.add(currentListingUrl);
+            const currentListingUrl = pageIndex === 1 ? listingUrl : withPageParam(listingUrl, pageIndex);
+            const beforePage = allUrls.size;
 
             log.info(`Playwright listing: opening ${currentListingUrl}`);
             await page.goto(currentListingUrl, { waitUntil: 'domcontentloaded', timeout: 90000 });
-            await waitForCloudflareClearance(page, { timeoutMs: 60000 });
-            await page.waitForTimeout(1500);
+            await waitForCloudflareClearance(page, { timeoutMs: 30000 });
+            await page.waitForTimeout(1200);
 
             let stableRounds = 0;
-
             for (let i = 0; i < maxScrolls; i += 1) {
                 const before = allUrls.size;
 
@@ -384,22 +408,18 @@ const fetchJobLinksViaPlaywrightListing = async ({ listingUrl, proxyUrl, limit, 
                 if (after === before) stableRounds += 1;
                 else stableRounds = 0;
 
-                if (stableRounds >= 3) break;
+                if (stableRounds >= 2) break;
 
                 await page.evaluate(() => window.scrollTo(0, document.body.scrollHeight));
-                await page.waitForTimeout(1200);
+                await page.waitForTimeout(900);
             }
 
+            const gained = allUrls.size - beforePage;
+            if (gained === 0) pagesWithNoNewUrls += 1;
+            else pagesWithNoNewUrls = 0;
+
+            if (pagesWithNoNewUrls >= 1) break;
             if (allUrls.size >= limit) break;
-
-            const nextUrl = await findNextListingUrl(page, currentListingUrl);
-            if (nextUrl) {
-                currentListingUrl = nextUrl;
-                continue;
-            }
-
-            // Fallback pagination: try ?page=N.
-            currentListingUrl = withPageParam(listingUrl, pageIndex + 1);
         }
 
         return Array.from(allUrls).slice(0, limit);
@@ -462,6 +482,7 @@ try {
     const maxConcurrency = Math.max(1, Number(maxConcurrencyRaw) || 1);
 
     const listingUrl = buildListingUrl({ startUrl, keyword, location });
+    const locationHint = getLocationHint({ inputLocation: location, listingUrl });
     const proxyConf = proxyConfiguration ? await Actor.createProxyConfiguration({ ...proxyConfiguration }) : undefined;
     const proxyUrl = proxyConf ? await proxyConf.newUrl() : undefined;
 
@@ -476,8 +497,8 @@ try {
         runtimeSeconds: 0,
     };
 
-    const linkLimit = Math.min(500, resultsWanted * 4);
-    const maxScrolls = Math.min(40, maxPages * 10);
+    const linkLimit = Math.min(500, resultsWanted);
+    const maxScrolls = Math.min(18, 8 + maxPages * 2);
 
     const urls = await fetchJobLinksViaPlaywrightListing({
         listingUrl,
@@ -549,7 +570,7 @@ try {
                 source = `${source}-minimal`;
             }
 
-            const job = normalizeJob({ url, detail, source });
+            const job = normalizeJob({ url, detail, source, locationHint });
             await Dataset.pushData(job);
             stats.jobsSaved += 1;
         } catch (err) {
