@@ -229,19 +229,24 @@ const normalizeJob = ({ url, detail, source }) => {
     };
 };
 
-const isLikelyJobUrl = (url) => {
+// Startup.jobs job detail URLs are typically slugged and end with "-<id>".
+// Example: https://startup.jobs/animal-health-clinical-research-associate-argenta-7566869
+const isJobDetailUrl = (url) => {
     try {
         const u = new URL(url);
         if (u.origin !== ORIGIN) return false;
         const p = u.pathname.toLowerCase();
         if (p.startsWith('/cdn-cgi/')) return false;
         if (p.includes('/apply')) return false;
+        if (p.startsWith('/company/')) return false;
         if (p.startsWith('/companies/')) return false;
         if (p.startsWith('/tags/')) return false;
         if (p.startsWith('/roles/')) return false;
         if (p.startsWith('/locations/')) return false;
         if (p === '/' || p === '/remote-jobs') return false;
-        return /-\d+$/.test(p) || p.includes('/jobs/') || p.includes('/job/');
+        // Strict: only single-segment paths ending with "-<digits>".
+        // This intentionally excludes non-job pages like /company/<slug>.
+        return /^\/[^/]+-\d+\/?$/.test(p);
     } catch {
         return false;
     }
@@ -311,43 +316,90 @@ const buildListingUrl = ({ startUrl, keyword, location }) => {
     return u.href;
 };
 
-const fetchJobLinksViaPlaywrightListing = async ({ listingUrl, proxyUrl, limit, maxScrolls }) => {
+const findNextListingUrl = async (page, currentUrl) => {
+    const nextHref = await page
+        .$eval('a[rel="next"]', (el) => el.getAttribute('href'))
+        .catch(() => null);
+    if (nextHref) return toAbsoluteUrl(nextHref, currentUrl);
+
+    const nextByText = await page
+        .$$eval('a[href]', (els) => {
+            const pick = els.find((el) => (el.textContent || '').trim().toLowerCase() === 'next');
+            return pick ? pick.getAttribute('href') : null;
+        })
+        .catch(() => null);
+    if (nextByText) return toAbsoluteUrl(nextByText, currentUrl);
+
+    return null;
+};
+
+const withPageParam = (url, pageNumber) => {
+    try {
+        const u = new URL(url);
+        u.searchParams.set('page', String(pageNumber));
+        return u.href;
+    } catch {
+        return url;
+    }
+};
+
+const fetchJobLinksViaPlaywrightListing = async ({ listingUrl, proxyUrl, limit, maxScrolls, maxPages }) => {
     const { context, close } = await createPlaywrightContext({ proxyUrl });
     const page = await context.newPage();
     try {
-        log.info(`Playwright listing: opening ${listingUrl}`);
-        await page.goto(listingUrl, { waitUntil: 'domcontentloaded', timeout: 90000 });
-        await waitForCloudflareClearance(page, { timeoutMs: 60000 });
-        await page.waitForTimeout(1500);
-
         const allUrls = new Set();
-        let stableRounds = 0;
 
-        for (let i = 0; i < maxScrolls; i += 1) {
-            const before = allUrls.size;
+        const visitedListingUrls = new Set();
+        let currentListingUrl = listingUrl;
 
-            const html = await page.content().catch(() => '');
-            for (const u of parseLdJsonItemListUrls(html, listingUrl)) {
-                const abs = toAbsoluteUrl(u, listingUrl);
-                if (abs && isLikelyJobUrl(abs)) allUrls.add(abs);
+        for (let pageIndex = 1; pageIndex <= maxPages; pageIndex += 1) {
+            if (visitedListingUrls.has(currentListingUrl)) break;
+            visitedListingUrls.add(currentListingUrl);
+
+            log.info(`Playwright listing: opening ${currentListingUrl}`);
+            await page.goto(currentListingUrl, { waitUntil: 'domcontentloaded', timeout: 90000 });
+            await waitForCloudflareClearance(page, { timeoutMs: 60000 });
+            await page.waitForTimeout(1500);
+
+            let stableRounds = 0;
+
+            for (let i = 0; i < maxScrolls; i += 1) {
+                const before = allUrls.size;
+
+                const html = await page.content().catch(() => '');
+                for (const u of parseLdJsonItemListUrls(html, currentListingUrl)) {
+                    const abs = toAbsoluteUrl(u, currentListingUrl);
+                    if (abs && isJobDetailUrl(abs)) allUrls.add(abs);
+                }
+
+                const hrefs = await page.$$eval('a[href]', (els) => els.map((e) => e.getAttribute('href')).filter(Boolean));
+                for (const href of hrefs) {
+                    const abs = toAbsoluteUrl(href, currentListingUrl);
+                    if (abs && isJobDetailUrl(abs)) allUrls.add(abs);
+                }
+
+                const after = allUrls.size;
+                if (after >= limit) return Array.from(allUrls).slice(0, limit);
+
+                if (after === before) stableRounds += 1;
+                else stableRounds = 0;
+
+                if (stableRounds >= 3) break;
+
+                await page.evaluate(() => window.scrollTo(0, document.body.scrollHeight));
+                await page.waitForTimeout(1200);
             }
 
-            const hrefs = await page.$$eval('a[href]', (els) => els.map((e) => e.getAttribute('href')).filter(Boolean));
-            for (const href of hrefs) {
-                const abs = toAbsoluteUrl(href, listingUrl);
-                if (abs && isLikelyJobUrl(abs)) allUrls.add(abs);
+            if (allUrls.size >= limit) break;
+
+            const nextUrl = await findNextListingUrl(page, currentListingUrl);
+            if (nextUrl) {
+                currentListingUrl = nextUrl;
+                continue;
             }
 
-            const after = allUrls.size;
-            if (after >= limit) return Array.from(allUrls).slice(0, limit);
-
-            if (after === before) stableRounds += 1;
-            else stableRounds = 0;
-
-            if (stableRounds >= 3) break;
-
-            await page.evaluate(() => window.scrollTo(0, document.body.scrollHeight));
-            await page.waitForTimeout(1200);
+            // Fallback pagination: try ?page=N.
+            currentListingUrl = withPageParam(listingUrl, pageIndex + 1);
         }
 
         return Array.from(allUrls).slice(0, limit);
@@ -427,7 +479,13 @@ try {
     const linkLimit = Math.min(500, resultsWanted * 4);
     const maxScrolls = Math.min(40, maxPages * 10);
 
-    const urls = await fetchJobLinksViaPlaywrightListing({ listingUrl, proxyUrl, limit: linkLimit, maxScrolls });
+    const urls = await fetchJobLinksViaPlaywrightListing({
+        listingUrl,
+        proxyUrl,
+        limit: linkLimit,
+        maxScrolls,
+        maxPages,
+    });
     stats.listingUrlsFound = urls.length;
     log.info(`Listing extracted: ${urls.length} job URLs`);
 
