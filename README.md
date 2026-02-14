@@ -1,80 +1,31 @@
 # Startup Jobs Scraper
 
-Extract remote job listings from **Startup.jobs** - the leading job board for startup and tech company positions worldwide. Get comprehensive job data including titles, companies, locations, salaries, and full descriptions.
+Extract startup and remote job listings from Startup.jobs in a fast, reliable, automated workflow. Collect complete hiring data including job titles, company details, salary ranges, posting dates, and descriptions for research, monitoring, and analysis. This scraper is built for teams that need consistent job market data at scale.
 
----
+## Features
 
-## What This Scraper Does
-
-Startup Jobs Scraper automatically extracts job listings from Startup.jobs, providing structured data ready for analysis, integration, or personal job tracking.
-
-### How It Works (Cheap Hybrid Strategy)
-
-- **1) Playwright listing**: Opens the results page once and extracts job detail URLs (handles dynamic rendering / Cloudflare).
-- Only URLs matching the job pattern like `https://startup.jobs/<slug>-<id>` are collected (company pages like `/company/...` are ignored).
-- The listing uses `max_pages` pagination and stops early once `results_wanted` URLs are collected.
-- **2) HTTP + Cheerio details (cheap)**: Fetches each job detail page with `got-scraping` and parses JSON-LD/HTML using Cheerio.
-- **3) Playwright fallback (only when blocked)**: If a detail page is Cloudflare-blocked over HTTP, loads it in Playwright and parses the HTML.
-
-### Key Capabilities
-
-- **Remote Job Focus** - Specialized for remote and distributed work opportunities
-- **Comprehensive Data** - Extracts titles, companies, locations, job types, salaries, and descriptions
-- **Flexible Search** - Filter by keywords, location, and job categories
-- **Scalable Collection** - Gather from 10 to 500+ listings per run
-- **Production Ready** - Handles rate limiting and anti-bot measures automatically
-
----
+- **Comprehensive Job Collection** — Gather job records with title, company, location, salary, tags, and posting metadata.
+- **Description Enrichment** — Capture detailed job descriptions and clean text for analysis-ready datasets.
+- **Flexible Search Inputs** — Filter by keyword, location, and listing URL to target specific job segments.
+- **Scalable Output Control** — Set result and page limits to balance data depth, speed, and cost.
+- **Reliable Anti-Blocking Handling** — Keep extraction stable even when websites apply protection layers.
 
 ## Use Cases
 
-| Industry | Application |
-|----------|-------------|
-| **Recruitment** | Build candidate sourcing databases for startup roles |
-| **Job Seekers** | Track and monitor new remote opportunities automatically |
-| **Market Research** | Analyze startup hiring trends and salary benchmarks |
-| **HR Analytics** | Study demand for skills across the startup ecosystem |
-| **Career Platforms** | Integrate startup job data into your application |
+### Talent Intelligence
+Track hiring demand across startup roles, locations, and experience levels. Build weekly or daily trend snapshots for leadership and recruiting teams.
 
----
+### Recruitment Operations
+Create fresh candidate sourcing datasets by collecting new openings and role attributes automatically. Reduce manual job-board monitoring effort.
 
-## Input Configuration
+### Compensation Research
+Analyze salary ranges by function, seniority, and market. Support compensation benchmarking and talent planning with structured data.
 
-### Basic Example - Remote Software Jobs
+### Product and Market Research
+Monitor role requirements, skills demand, and company hiring patterns over time. Identify emerging trends in startup hiring strategies.
 
-```json
-{
-  "keyword": "software engineer",
-  "results_wanted": 50
-}
-```
-
-### Advanced Example - Full Configuration
-
-```json
-{
-  "keyword": "product manager",
-  "location": "Remote",
-  "collectDetails": true,
-  "results_wanted": 100,
-  "max_pages": 5,
-  "maxConcurrency": 2,
-  "proxyConfiguration": {
-    "useApifyProxy": true,
-    "apifyProxyGroups": ["RESIDENTIAL"]
-  }
-}
-```
-
-### Custom URL Example
-
-```json
-{
-  "startUrl": "https://startup.jobs/remote-jobs?w=remote&q=data+scientist",
-  "results_wanted": 30,
-  "collectDetails": true
-}
-```
+### Job Alert Platforms
+Feed downstream tools and internal dashboards with normalized job records. Power notifications, matching logic, and searchable job databases.
 
 ---
 
@@ -82,158 +33,180 @@ Startup Jobs Scraper automatically extracts job listings from Startup.jobs, prov
 
 | Parameter | Type | Required | Default | Description |
 |-----------|------|----------|---------|-------------|
-| `startUrl` | String | No | - | Custom Startup.jobs URL. Overrides other search parameters when set. |
-| `keyword` | String | No | `""` | Search terms for job titles or skills (e.g., "react developer", "marketing manager"). |
-| `location` | String | No | `"Remote"` | Location filter. Use "Remote" for remote-only positions. |
-| `collectDetails` | Boolean | No | `true` | Extract full job descriptions by visiting detail pages. Set to `false` for faster runs with basic data only. |
-| `results_wanted` | Integer | No | `25` | Maximum jobs to extract (1-500). |
-| `max_pages` | Integer | No | `3` | Maximum listing pages to process (1-20). |
-| `maxConcurrency` | Integer | No | `2` | Concurrent browser sessions (1-5). Lower values are more reliable. |
-| `proxyConfiguration` | Object | No | Apify Residential | Proxy settings for the scraper. Residential proxies recommended. |
+| `startUrl` | String | No | — | Custom Startup.jobs listing URL. When provided, it overrides other search filters. |
+| `keyword` | String | No | `""` | Search phrase for job targeting, such as role, function, or skill keywords. |
+| `location` | String | No | `"Remote"` | Location filter. Use `"Remote"` for remote-first job collection. |
+| `collectDetails` | Boolean | No | `true` | Include enriched job descriptions and additional detail fields. |
+| `results_wanted` | Integer | No | `20` | Maximum number of jobs to collect in a run (`1` to `500`). |
+| `max_pages` | Integer | No | `3` | Maximum number of listing pages to process (`1` to `20`). |
+| `maxConcurrency` | Integer | No | `2` | Concurrency setting for extraction stability and speed (`1` to `5`). |
 
 ---
 
 ## Output Data
 
-Each job listing contains the following fields:
-
-### Sample Output
-
-```json
-{
-  "id": "7565554",
-  "title": "Senior Software Engineer",
-  "company": "TechStartup Inc.",
-  "location": "Remote",
-  "job_type": "Full-time",
-  "salary": "$120,000 - $180,000",
-  "description_text": "We are looking for a senior software engineer to join our growing team...",
-  "description_html": "<div>We are looking for a senior software engineer...</div>",
-  "company_logo": "https://startup.jobs/cdn/logos/company.png",
-  "posted_at": "2 days ago",
-  "apply_link": "https://startup.jobs/apply/7565554",
-  "url": "https://startup.jobs/senior-software-engineer-techstartup-7565554",
-  "source": "html",
-  "fetched_at": "2024-01-15T10:30:00.000Z"
-}
-```
-
-### Output Fields Reference
+Each dataset item contains:
 
 | Field | Type | Description |
 |-------|------|-------------|
-| `id` | String | Unique job identifier |
-| `title` | String | Job position title |
-| `company` | String | Hiring company name |
-| `location` | String | Work location (typically "Remote") |
-| `job_type` | String | Employment type (Full-time, Part-time, Contract) |
-| `salary` | String | Compensation details when available |
-| `description_text` | String | Clean text job description |
-| `description_html` | String | Full HTML description with formatting |
-| `company_logo` | String | URL to company logo image |
-| `posted_at` | String | When the job was posted |
-| `apply_link` | String | Direct application URL |
-| `url` | String | Job detail page URL |
-| `source` | String | Data extraction method |
-| `fetched_at` | String | Timestamp of data extraction |
+| `id` | String | Unique job identifier. |
+| `title` | String | Job title. |
+| `company` | String | Hiring company name. |
+| `location` | String | Job location or remote status. |
+| `job_type` | String | Employment type (for example full-time or part-time). |
+| `salary` | String | Human-readable salary value when available. |
+| `posted_at` | String | Job publish timestamp. |
+| `description_text` | String | Plain text job description for analysis workflows. |
+| `description_html` | String | Rich job description content. |
+| `company_logo` | String | Company logo URL when available. |
+| `apply_link` | String | Application or job destination link. |
+| `url` | String | Job page URL. |
+| `source` | String | Extraction source indicator. |
+| `fetched_at` | String | Data collection timestamp (ISO format). |
+| `tags` | Array | Role or topic tags related to the job. |
+| `workplace_type` | String | Workplace model label. |
+| `employment_type` | String | Employment type code from listing data. |
+| `experience_bucket` | String | Experience level category when provided. |
+| `salary_min` | Number | Minimum salary value when available. |
+| `salary_max` | Number | Maximum salary value when available. |
+| `salary_currency` | String | Salary currency code. |
+| `city` | String | City value when available. |
+| `country` | String | Country value when available. |
+| `company_slug` | String | Company slug identifier. |
 
 ---
 
-## Performance and Cost
+## Usage Examples
 
-### Recommended Settings
+### Basic Remote Collection
 
-| Use Case | Jobs | Details | Pages | Concurrency | Estimated Time |
-|----------|------|---------|-------|-------------|----------------|
-| Quick Test | 10 | Yes | 1 | 2 | ~1 minute |
-| Standard Run | 50 | Yes | 3 | 2 | ~3 minutes |
-| Large Collection | 200 | Yes | 10 | 3 | ~8 minutes |
-| Speed Optimized | 100 | No | 5 | 3 | ~2 minutes |
+```json
+{
+  "location": "Remote",
+  "results_wanted": 20
+}
+```
 
-### Tips for Best Results
+### Keyword-Focused Extraction
 
-1. **Start with a test run** using 10-25 jobs to verify configuration
-2. **Enable Apify Proxy** with residential IPs for reliable results
-3. **Use lower concurrency** (2) for more consistent data extraction
-4. **Set `collectDetails: false`** for faster runs when only basic info is needed
+```json
+{
+  "keyword": "software engineer",
+  "location": "Remote",
+  "results_wanted": 50,
+  "max_pages": 5,
+  "collectDetails": true
+}
+```
+
+### Custom Listing URL
+
+```json
+{
+  "startUrl": "https://startup.jobs/remote-jobs?w=remote&q=data+scientist",
+  "results_wanted": 30,
+  "max_pages": 3,
+  "collectDetails": true
+}
+```
+
+## Sample Output
+
+```json
+{
+  "id": "6654883",
+  "title": "Senior Full Stack Engineer",
+  "company": "Solace",
+  "location": "Remote",
+  "job_type": "Full Time",
+  "salary": "USD 150000 - 200000",
+  "posted_at": "2026-01-22T16:50:47Z",
+  "description_text": "As a Full Stack Engineer, you'll join a talented team and own delivery from requirements through release...",
+  "description_html": "<div class=\"trix-content\">...</div>",
+  "company_logo": "https://startup.jobs/logos/34127",
+  "apply_link": "https://startup.jobs/apply/4cec53b4-9d8e-4ce7-989b-b9f0e163de13",
+  "url": "https://startup.jobs/senior-full-stack-engineer-solace-6654883",
+  "source": "listing+details",
+  "fetched_at": "2026-02-14T05:28:50.151Z",
+  "tags": ["Engineer", "Full Stack", "Senior"]
+}
+```
 
 ---
 
-## Integration Options
+## Tips for Best Results
+
+### Start with QA-Friendly Limits
+- Begin with `results_wanted: 20` to validate settings quickly.
+- Increase volume after confirming output quality and stability.
+
+### Use Specific Keywords
+- Combine role and specialty terms to narrow results.
+- Use broader keywords when building market-wide datasets.
+
+### Tune Concurrency Carefully
+- Keep `maxConcurrency` low for stability on protected pages.
+- Increase gradually when throughput is stable.
+
+### Keep Runs Fast
+- Start with `results_wanted: 20` and scale up once the run profile is stable.
+- Increase `maxConcurrency` gradually and monitor runtime versus failure rate.
+
+---
+
+## Integrations
+
+Connect your dataset with:
+
+- **Google Sheets** — Share and analyze hiring data quickly.
+- **Airtable** — Build searchable internal hiring intelligence tables.
+- **Make** — Automate downstream workflows and alerts.
+- **Zapier** — Trigger notifications and CRM updates.
+- **Webhooks** — Deliver fresh run results to your own endpoints.
 
 ### Export Formats
 
-Download your data in multiple formats directly from Apify:
-
-- **JSON** - Structured data for applications and APIs
-- **CSV** - Spreadsheet-compatible format
-- **Excel** - Direct import to Microsoft Excel
-- **XML** - For legacy system integration
-
-### API Access
-
-Access results programmatically via the Apify API:
-
-```
-GET https://api.apify.com/v2/datasets/{datasetId}/items
-```
-
-### Webhooks and Scheduling
-
-- **Webhooks** - Get notified when runs complete
-- **Scheduling** - Automate daily, weekly, or custom schedules
-- **Integration** - Connect with Zapier, Make, or custom workflows
+- **JSON** — API and engineering workflows.
+- **CSV** — Spreadsheet analysis and BI import.
+- **Excel** — Business reporting and operations review.
+- **XML** — Legacy system integrations.
 
 ---
 
-## Troubleshooting
+## Frequently Asked Questions
 
-### No Results Found
+### How many jobs can I collect per run?
+You can request up to `500` items per run using `results_wanted`.
 
-- Verify the keyword matches actual job listings on Startup.jobs
-- Try broader search terms
-- Check if the website is accessible in your region
+### Can I collect full job descriptions?
+Yes. Keep `collectDetails` enabled to gather enriched description fields.
 
-### Timeout Errors
+### Why are some fields empty?
+Some listings do not publish every field (for example salary or location detail), so those values may be null.
 
-- Reduce `results_wanted` and `max_pages` values
-- Lower `maxConcurrency` to 1 or 2
-- Ensure proxy configuration is enabled
+### How do I make runs more reliable?
+Use residential proxies, keep concurrency moderate, and start with focused filters.
 
-### Incomplete Data
+### Can I schedule this scraper daily?
+Yes. You can schedule runs from Apify to keep your dataset continuously updated.
 
-- Enable `collectDetails: true` for full job descriptions
-- Some jobs may have limited information posted
-- Older listings may have expired or been removed
-
-### Blocked Requests
-
-- Enable Apify Proxy with residential IP groups
-- Reduce concurrency to minimize detection
-- Consider running during off-peak hours
-- If Cloudflare blocks HTTP, Playwright fallback will automatically bootstrap cookies; for best reliability, use residential proxies.
-
----
-
-## Legal and Compliance
-
-This scraper extracts publicly available job listing data from Startup.jobs. Users are responsible for:
-
-- Complying with Startup.jobs terms of service
-- Respecting rate limits and fair use policies
-- Following applicable data protection regulations
-- Using extracted data responsibly and ethically
+### Is this suitable for analytics pipelines?
+Yes. The output is normalized and export-friendly for dashboards, alerts, and data warehouses.
 
 ---
 
 ## Support
 
-For questions, issues, or feature requests:
+For issues or feature requests, use support channels in the Apify Console.
 
-- Review the input configuration examples above
-- Check the troubleshooting section for common issues
-- Test with smaller result sets before scaling up
+### Resources
+
+- [Apify Documentation](https://docs.apify.com/)
+- [Apify API Reference](https://docs.apify.com/api/v2)
+- [Apify Scheduling](https://docs.apify.com/platform/schedules)
 
 ---
 
-**Keywords**: startup jobs, remote jobs, tech jobs, startup careers, software engineer jobs, product manager jobs, remote work, tech hiring, job scraping, career data, employment listings, startup recruitment, tech talent
+## Legal Notice
+
+This actor is intended for legitimate data collection and analysis. Users are responsible for complying with applicable laws, platform terms, and responsible data usage practices.
