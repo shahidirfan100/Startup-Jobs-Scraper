@@ -1,31 +1,32 @@
 # Startup Jobs Scraper
 
-Extract startup and remote job listings from Startup.jobs in a fast, reliable, automated workflow. Collect complete hiring data including job titles, company details, salary ranges, posting dates, and descriptions for research, monitoring, and analysis. This scraper is built for teams that need consistent job market data at scale.
+Extract startup job listings from Startup.jobs for hiring research, compensation analysis, and market monitoring. Collect structured job data including titles, companies, locations, salary ranges, posting dates, logos, tags, role IDs, and job links in a fast automated run.
 
 ## Features
 
-- **Comprehensive Job Collection** — Gather job records with title, company, location, salary, tags, and posting metadata.
-- **Description Enrichment** — Capture detailed job descriptions and clean text for analysis-ready datasets.
-- **Flexible Search Inputs** — Filter by keyword, location, and listing URL to target specific job segments.
-- **Scalable Output Control** — Set result and page limits to balance data depth, speed, and cost.
-- **Reliable Anti-Blocking Handling** — Keep extraction stable even when websites apply protection layers.
+- **Startup Job Collection** - Gather remote and startup job records with core hiring details.
+- **Keyword And Location Filters** - Target roles, skills, remote jobs, or custom Startup.jobs listing URLs.
+- **Rich Listing Records** - Capture salary, location, company, role, posting date, and geo fields when available.
+- **Clean Dataset Output** - Duplicate jobs are skipped and empty values are removed from records.
+- **Fast QA-Friendly Runs** - Start with 20 results and increase volume after confirming the output.
 
 ## Use Cases
 
 ### Talent Intelligence
-Track hiring demand across startup roles, locations, and experience levels. Build weekly or daily trend snapshots for leadership and recruiting teams.
+
+Track hiring demand across startup roles, company types, and experience levels. Build repeatable datasets for recruiting strategy, workforce planning, and market snapshots.
 
 ### Recruitment Operations
-Create fresh candidate sourcing datasets by collecting new openings and role attributes automatically. Reduce manual job-board monitoring effort.
+
+Collect fresh job openings for sourcing workflows, job alerts, or internal research dashboards. Use keyword and location filters to focus on the roles your team cares about.
 
 ### Compensation Research
-Analyze salary ranges by function, seniority, and market. Support compensation benchmarking and talent planning with structured data.
 
-### Product and Market Research
-Monitor role requirements, skills demand, and company hiring patterns over time. Identify emerging trends in startup hiring strategies.
+Analyze published salary ranges by role, company, location, and seniority. Combine `salary_min`, `salary_max`, and `salary_currency` fields with posting dates to monitor pay trends.
 
-### Job Alert Platforms
-Feed downstream tools and internal dashboards with normalized job records. Power notifications, matching logic, and searchable job databases.
+### Market Research
+
+Study startup hiring patterns, role requirements, company activity, and remote work availability. Export results to spreadsheets or BI tools for further analysis.
 
 ---
 
@@ -33,19 +34,17 @@ Feed downstream tools and internal dashboards with normalized job records. Power
 
 | Parameter | Type | Required | Default | Description |
 |-----------|------|----------|---------|-------------|
-| `startUrl` | String | No | — | Custom Startup.jobs listing URL. When provided, it overrides other search filters. |
-| `keyword` | String | No | `""` | Search phrase for job targeting, such as role, function, or skill keywords. |
-| `location` | String | No | `"Remote"` | Location filter. Use `"Remote"` for remote-first job collection. |
-| `collectDetails` | Boolean | No | `true` | Include enriched job descriptions and additional detail fields. |
-| `results_wanted` | Integer | No | `20` | Maximum number of jobs to collect in a run (`1` to `500`). |
-| `max_pages` | Integer | No | `3` | Maximum number of listing pages to process (`1` to `20`). |
-| `maxConcurrency` | Integer | No | `2` | Concurrency setting for extraction stability and speed (`1` to `5`). |
+| `startUrl` | String | No | - | Custom Startup.jobs listing URL. When provided, it overrides keyword and location filters. |
+| `keyword` | String | No | `""` | Job title, skill, or search phrase to target. |
+| `location` | String | No | `"Remote"` | Location filter. Use `Remote` for remote-first collection. |
+| `results_wanted` | Integer | No | `20` | Maximum number of jobs to collect, from `1` to `500`. |
+| `max_pages` | Integer | No | `3` | Maximum number of result pages to process, from `1` to `20`. |
 
 ---
 
 ## Output Data
 
-Each dataset item contains:
+Each dataset item can contain:
 
 | Field | Type | Description |
 |-------|------|-------------|
@@ -53,26 +52,41 @@ Each dataset item contains:
 | `title` | String | Job title. |
 | `company` | String | Hiring company name. |
 | `location` | String | Job location or remote status. |
-| `job_type` | String | Employment type (for example full-time or part-time). |
-| `salary` | String | Human-readable salary value when available. |
+| `job_type` | String | Human-readable employment type. |
+| `salary` | String | Human-readable salary range when published. |
 | `posted_at` | String | Job publish timestamp. |
-| `description_text` | String | Plain text job description for analysis workflows. |
-| `description_html` | String | Rich job description content. |
-| `company_logo` | String | Company logo URL when available. |
+| `company_logo` | String | Company logo URL. |
 | `apply_link` | String | Application or job destination link. |
-| `url` | String | Job page URL. |
-| `source` | String | Extraction source indicator. |
-| `fetched_at` | String | Data collection timestamp (ISO format). |
-| `tags` | Array | Role or topic tags related to the job. |
-| `workplace_type` | String | Workplace model label. |
-| `employment_type` | String | Employment type code from listing data. |
+| `url` | String | Startup.jobs listing URL. |
+| `source` | String | Source label for listing records. |
+| `fetched_at` | String | Collection timestamp in ISO format. |
+| `tags` | Array | Role, function, or topic tags. |
+| `workplace_type` | String | Workplace model, such as remote. |
+| `employment_type` | String | Published employment type code. |
 | `experience_bucket` | String | Experience level category when provided. |
-| `salary_min` | Number | Minimum salary value when available. |
-| `salary_max` | Number | Maximum salary value when available. |
+| `salary_min` | Number | Minimum salary value when published. |
+| `salary_max` | Number | Maximum salary value when published. |
 | `salary_currency` | String | Salary currency code. |
-| `city` | String | City value when available. |
-| `country` | String | Country value when available. |
+| `city` | String | City when provided. |
+| `country` | String | Country when provided. |
+| `country_code` | String | Country code when provided. |
+| `country_id` | Number | Startup.jobs country identifier. |
+| `city_id` | Number | Startup.jobs city identifier. |
+| `state_id` | Number | Startup.jobs state identifier. |
+| `company_id` | Number | Startup.jobs company identifier. |
 | `company_slug` | String | Company slug identifier. |
+| `role_ids` | Array | Role category IDs associated with the job. |
+| `location_parts` | Array | Structured location parts. |
+| `published_at_unix` | Number | Publish timestamp as Unix seconds. |
+| `created_at_unix` | Number | Creation timestamp as Unix seconds. |
+| `has_salary` | Boolean | Whether a salary range is published. |
+| `salary_interval` | String | Salary period, such as year. |
+| `salary_min_usd` | Number | Minimum salary converted to USD when available. |
+| `salary_max_usd` | Number | Maximum salary converted to USD when available. |
+| `geo_lat` | Number | Latitude when provided. |
+| `geo_lng` | Number | Longitude when provided. |
+| `highlighted` | Boolean | Whether the listing is highlighted. |
+| `missing_fields` | Array | Core fields unavailable for that record, only included when needed. |
 
 ---
 
@@ -82,20 +96,19 @@ Each dataset item contains:
 
 ```json
 {
-  "location": "Remote",
-  "results_wanted": 20
+    "location": "Remote",
+    "results_wanted": 20
 }
 ```
 
-### Keyword-Focused Extraction
+### Keyword-Focused Search
 
 ```json
 {
-  "keyword": "software engineer",
-  "location": "Remote",
-  "results_wanted": 50,
-  "max_pages": 5,
-  "collectDetails": true
+    "keyword": "software engineer",
+    "location": "Remote",
+    "results_wanted": 50,
+    "max_pages": 5
 }
 ```
 
@@ -103,32 +116,43 @@ Each dataset item contains:
 
 ```json
 {
-  "startUrl": "https://startup.jobs/remote-jobs?w=remote&q=data+scientist",
-  "results_wanted": 30,
-  "max_pages": 3,
-  "collectDetails": true
+    "startUrl": "https://startup.jobs/remote-jobs?w=remote&q=data+scientist",
+    "results_wanted": 30,
+    "max_pages": 3
 }
 ```
+
+---
 
 ## Sample Output
 
 ```json
 {
-  "id": "6654883",
-  "title": "Senior Full Stack Engineer",
-  "company": "Solace",
-  "location": "Remote",
-  "job_type": "Full Time",
-  "salary": "USD 150000 - 200000",
-  "posted_at": "2026-01-22T16:50:47Z",
-  "description_text": "As a Full Stack Engineer, you'll join a talented team and own delivery from requirements through release...",
-  "description_html": "<div class=\"trix-content\">...</div>",
-  "company_logo": "https://startup.jobs/logos/34127",
-  "apply_link": "https://startup.jobs/apply/4cec53b4-9d8e-4ce7-989b-b9f0e163de13",
-  "url": "https://startup.jobs/senior-full-stack-engineer-solace-6654883",
-  "source": "listing+details",
-  "fetched_at": "2026-02-14T05:28:50.151Z",
-  "tags": ["Engineer", "Full Stack", "Senior"]
+    "id": "8007953",
+    "title": "Sr. Applied AI Engineer",
+    "company": "Vi",
+    "location": "Remote",
+    "job_type": "Full Time",
+    "posted_at": "2026-07-03T19:53:30Z",
+    "company_logo": "https://startup.jobs/logos/38591",
+    "apply_link": "https://startup.jobs/sr-applied-ai-engineer-vi-co-8007953",
+    "url": "https://startup.jobs/sr-applied-ai-engineer-vi-co-8007953",
+    "source": "listing-api",
+    "fetched_at": "2026-07-09T14:07:36.988Z",
+    "tags": ["Artificial Intelligence", "Engineer"],
+    "workplace_type": "remote",
+    "employment_type": "full-time",
+    "experience_bucket": "3-6",
+    "salary_currency": "USD",
+    "country_code": "US",
+    "country_id": 77,
+    "company_id": 38591,
+    "role_ids": [1, 8],
+    "published_at_unix": 1783108410,
+    "created_at_unix": 1783100100,
+    "has_salary": false,
+    "country": "United States",
+    "company_slug": "vi-co"
 }
 ```
 
@@ -136,68 +160,69 @@ Each dataset item contains:
 
 ## Tips for Best Results
 
-### Start with QA-Friendly Limits
-- Begin with `results_wanted: 20` to validate settings quickly.
-- Increase volume after confirming output quality and stability.
+### Start Small
 
-### Use Specific Keywords
-- Combine role and specialty terms to narrow results.
-- Use broader keywords when building market-wide datasets.
+- Use `results_wanted: 20` for quick validation.
+- Increase result volume after checking the dataset shape.
 
-### Tune Concurrency Carefully
-- Keep `maxConcurrency` low for stability on protected pages.
-- Increase gradually when throughput is stable.
+### Use Focused Searches
 
-### Keep Runs Fast
-- Start with `results_wanted: 20` and scale up once the run profile is stable.
-- Increase `maxConcurrency` gradually and monitor runtime versus failure rate.
+- Combine role and skill terms for targeted datasets.
+- Use a custom listing URL when Startup.jobs filters already match your needs.
+
+### Review Missing Fields
+
+- Some employers do not publish salary, city, or full descriptions.
+- Check `missing_fields` when it appears to understand record-level gaps.
 
 ---
 
 ## Integrations
 
-Connect your dataset with:
+Connect your data with:
 
-- **Google Sheets** — Share and analyze hiring data quickly.
-- **Airtable** — Build searchable internal hiring intelligence tables.
-- **Make** — Automate downstream workflows and alerts.
-- **Zapier** — Trigger notifications and CRM updates.
-- **Webhooks** — Deliver fresh run results to your own endpoints.
+- **Google Sheets** - Review and share hiring data.
+- **Airtable** - Build searchable recruiting databases.
+- **Make** - Automate alerts and downstream workflows.
+- **Zapier** - Trigger updates in CRM or notification tools.
+- **Webhooks** - Send fresh run results to your systems.
 
 ### Export Formats
 
-- **JSON** — API and engineering workflows.
-- **CSV** — Spreadsheet analysis and BI import.
-- **Excel** — Business reporting and operations review.
-- **XML** — Legacy system integrations.
+- **JSON** - For data pipelines and apps.
+- **CSV** - For spreadsheets and analysis.
+- **Excel** - For reporting and operations.
+- **XML** - For legacy integrations.
 
 ---
 
 ## Frequently Asked Questions
 
-### How many jobs can I collect per run?
-You can request up to `500` items per run using `results_wanted`.
+### How many jobs can I collect?
+
+You can collect up to `500` jobs per run using `results_wanted`.
 
 ### Can I collect full job descriptions?
-Yes. Keep `collectDetails` enabled to gather enriched description fields.
 
-### Why are some fields empty?
-Some listings do not publish every field (for example salary or location detail), so those values may be null.
+No, full descriptions are not included because the fast listing source does not publish them. The actor prioritizes stable listing records over slow page-detail collection.
 
-### How do I make runs more reliable?
-Use residential proxies, keep concurrency moderate, and start with focused filters.
+### Why are some fields missing?
 
-### Can I schedule this scraper daily?
-Yes. You can schedule runs from Apify to keep your dataset continuously updated.
+Some companies do not publish every field, such as salary or city. Empty values are removed, and `missing_fields` appears if a core field is unavailable.
 
-### Is this suitable for analytics pipelines?
-Yes. The output is normalized and export-friendly for dashboards, alerts, and data warehouses.
+### Can I schedule daily job monitoring?
+
+Yes, schedule recurring runs in Apify to keep your dataset fresh.
+
+### Is the output ready for analysis?
+
+Yes, records are structured, duplicate job IDs are skipped, and empty values are cleaned from each item.
 
 ---
 
 ## Support
 
-For issues or feature requests, use support channels in the Apify Console.
+For issues or feature requests, contact support through the Apify Console.
 
 ### Resources
 
@@ -209,4 +234,4 @@ For issues or feature requests, use support channels in the Apify Console.
 
 ## Legal Notice
 
-This actor is intended for legitimate data collection and analysis. Users are responsible for complying with applicable laws, platform terms, and responsible data usage practices.
+This actor is designed for legitimate data collection and analysis. Users are responsible for complying with applicable laws, website terms, and responsible data usage practices.

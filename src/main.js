@@ -1,8 +1,5 @@
 import { Actor, log } from 'apify';
-import { load as cheerioLoad } from 'cheerio';
-import { Dataset } from 'crawlee';
 import { gotScraping } from 'got-scraping';
-import { firefox } from 'playwright';
 
 const ORIGIN = 'https://startup.jobs';
 const DEFAULT_LISTING_URL = `${ORIGIN}/remote-jobs?w=remote`;
@@ -10,36 +7,12 @@ const MAX_ALGOLIA_HITS_PER_PAGE = 100;
 const DATASET_BATCH_SIZE = 10;
 
 const USER_AGENTS = [
-    'Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:147.0) Gecko/20100101 Firefox/147.0',
-    'Mozilla/5.0 (Macintosh; Intel Mac OS X 15.7; rv:147.0) Gecko/20100101 Firefox/147.0',
-    'Mozilla/5.0 (X11; Linux x86_64; rv:147.0) Gecko/20100101 Firefox/147.0',
+    'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36',
+    'Mozilla/5.0 (Macintosh; Intel Mac OS X 15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36',
+    'Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36',
 ];
 
 const getRandomUserAgent = () => USER_AGENTS[Math.floor(Math.random() * USER_AGENTS.length)];
-
-const createLimiter = (maxConcurrency) => {
-    let active = 0;
-    const queue = [];
-
-    const next = () => {
-        if (active >= maxConcurrency || queue.length === 0) return;
-        active += 1;
-        const { task, resolve, reject } = queue.shift();
-        task()
-            .then(resolve)
-            .catch(reject)
-            .finally(() => {
-                active -= 1;
-                next();
-            });
-    };
-
-    return (task) =>
-        new Promise((resolve, reject) => {
-            queue.push({ task, resolve, reject });
-            next();
-        });
-};
 
 const createDatasetBatchPusher = ({ batchSize = DATASET_BATCH_SIZE } = {}) => {
     const buffer = [];
@@ -49,7 +22,7 @@ const createDatasetBatchPusher = ({ batchSize = DATASET_BATCH_SIZE } = {}) => {
     const schedulePush = (items) => {
         if (!items.length) return;
         chain = chain.then(async () => {
-            await Dataset.pushData(items);
+            await Actor.pushData(items);
             pushedCount += items.length;
             log.info(`Dataset batch pushed: ${items.length} items (total pushed: ${pushedCount})`);
         });
@@ -94,6 +67,19 @@ const tryParseJson = (value) => {
     } catch {
         return null;
     }
+};
+
+const extractMetaContent = (html, name) => {
+    if (!html) return null;
+    const patterns = [
+        new RegExp(`<meta[^>]+name=["']${name}["'][^>]+content=["']([^"']*)["']`, 'i'),
+        new RegExp(`<meta[^>]+content=["']([^"']*)["'][^>]+name=["']${name}["']`, 'i'),
+    ];
+    for (const pattern of patterns) {
+        const match = html.match(pattern);
+        if (match?.[1]) return match[1];
+    }
+    return null;
 };
 
 const looksLikeCloudflareChallengeHtml = (html) => {
@@ -215,312 +201,81 @@ const buildAlgoliaPayload = ({ query, workplaceTypes, employmentTypes, since, ex
     };
 };
 
-const createPlaywrightContext = async () => {
-    const browser = await firefox.launch({
-        headless: true,
-    });
-
-    const context = await browser.newContext({
-        userAgent: getRandomUserAgent(),
-        locale: 'en-US',
-        timezoneId: 'UTC',
-        viewport: { width: 1365, height: 768 },
-        extraHTTPHeaders: {
-            'Accept-Language': 'en-US,en;q=0.9',
-            Referer: ORIGIN,
-        },
-    });
-
-    await context.addInitScript(() => {
-        Object.defineProperty(navigator, 'webdriver', { get: () => undefined });
-        Object.defineProperty(navigator, 'languages', { get: () => ['en-US', 'en'] });
-        Object.defineProperty(navigator, 'platform', { get: () => 'Win32' });
-        window.chrome = window.chrome || { runtime: {} };
-    });
-
-    await context.route('**/*', async (route) => {
-        const type = route.request().resourceType();
-        const url = route.request().url();
-        if (
-            ['image', 'font', 'media', 'stylesheet'].includes(type) ||
-            url.includes('googletagmanager') ||
-            url.includes('google-analytics') ||
-            url.includes('doubleclick') ||
-            url.includes('facebook')
-        ) {
-            return route.abort();
-        }
-        return route.continue();
-    });
-
-    const close = async () => {
-        await context.close().catch(() => {});
-        await browser.close().catch(() => {});
-    };
-
-    return { context, close };
-};
-
-const waitForCloudflareClearance = async (page, timeoutMs = 15000) => {
-    const startedAt = Date.now();
-    while (Date.now() - startedAt < timeoutMs) {
-        const html = await page.content().catch(() => '');
-        if (!looksLikeCloudflareChallengeHtml(html)) return true;
-        await page.waitForTimeout(1000);
-    }
-    return false;
-};
-
-const bootstrapListingAndAlgoliaConfig = async ({ page, listingUrl }) => {
-    await page.goto(listingUrl, { waitUntil: 'domcontentloaded', timeout: 45000 });
-    await waitForCloudflareClearance(page, 15000);
-    await page.waitForSelector('body', { timeout: 12000 });
-
-    const data = await page.evaluate(() => {
-        const readMeta = (name) => document.querySelector(`meta[name="${name}"]`)?.getAttribute('content') || null;
-        return {
-            appId: readMeta('current-algolia-application-id'),
-            apiKey: readMeta('current-algolia-api-key-search'),
-            indexName: readMeta('current-algolia-index-post'),
-        };
-    });
-
-    if (!data.appId || !data.apiKey || !data.indexName) {
-        throw new Error('Failed to load Algolia config from listing page');
-    }
-
-    return data;
-};
-
-const fetchAlgoliaPageViaPlaywright = async ({ page, config, payload }) =>
-    page.evaluate(
-        async ({ appId, apiKey, indexName, queryPayload }) => {
-            const endpoint = `https://${appId.toLowerCase()}-dsn.algolia.net/1/indexes/${encodeURIComponent(indexName)}/query`;
-            const response = await fetch(endpoint, {
-                method: 'POST',
-                headers: {
-                    'content-type': 'application/json',
-                    'x-algolia-api-key': apiKey,
-                    'x-algolia-application-id': appId,
-                },
-                body: JSON.stringify(queryPayload),
-            });
-
-            const responseText = await response.text();
-            let json;
-            try {
-                json = JSON.parse(responseText);
-            } catch {
-                json = null;
-            }
-
-            return {
-                status: response.status,
-                json,
-                textSnippet: responseText.slice(0, 500),
-            };
-        },
-        {
-            appId: config.appId,
-            apiKey: config.apiKey,
-            indexName: config.indexName,
-            queryPayload: payload,
-        },
-    );
-
-const decodeHtmlEntities = (value) =>
-    String(value || '')
-        .replace(/&amp;/g, '&')
-        .replace(/&quot;/g, '"')
-        .replace(/&#39;/g, "'")
-        .replace(/&lt;/g, '<')
-        .replace(/&gt;/g, '>')
-        .replace(/&nbsp;/g, ' ');
-
-const cleanHtmlToText = (html) => {
-    if (!html) return null;
-    const stripped = String(html)
-        .replace(/<script\b[^<]*(?:(?!<\/script>)<[^<]*)*<\/script>/gi, ' ')
-        .replace(/<style\b[^<]*(?:(?!<\/style>)<[^<]*)*<\/style>/gi, ' ')
-        .replace(/<[^>]+>/g, ' ')
-        .replace(/\s+/g, ' ')
-        .trim();
-    return decodeHtmlEntities(stripped) || null;
-};
-
-const extractJobPostingJsonLd = (html) => {
-    const scriptRegex = /<script[^>]*type=["']application\/ld\+json["'][^>]*>([\s\S]*?)<\/script>/gi;
-    const matches = html.matchAll(scriptRegex);
-    for (const match of matches) {
-        const parsed = tryParseJson(match[1].trim());
-        if (!parsed) continue;
-        const entries = Array.isArray(parsed) ? parsed : [parsed];
-        for (const entry of entries) {
-            if (entry && typeof entry === 'object' && entry['@type'] === 'JobPosting') {
-                return entry;
-            }
-        }
-    }
-    return null;
-};
-
-const resolveLocation = ({ hit, jobPosting, locationHint }) => {
-    const locationType = String(jobPosting?.jobLocationType || '').toLowerCase();
-    if (locationType.includes('telecommute')) return 'Remote';
-
-    const applicant = String(jobPosting?.applicantLocationRequirements?.name || '').toLowerCase();
-    if (applicant.includes('anywhere') || applicant.includes('remote')) return 'Remote';
-
-    let places = [];
-    if (Array.isArray(jobPosting?.jobLocation)) {
-        places = jobPosting.jobLocation;
-    } else if (jobPosting?.jobLocation) {
-        places = [jobPosting.jobLocation];
-    }
-
-    for (const place of places) {
-        const locality = place?.address?.addressLocality;
-        const region = place?.address?.addressRegion;
-        const country = place?.address?.addressCountry;
-        const resolved = [locality, region, country].find((value) => typeof value === 'string' && value.trim());
-        if (resolved) return resolved.trim();
-    }
-
-    if (String(hit?.workplace_type_id || '').toLowerCase() === 'remote') return 'Remote';
-    if (hit?.location && String(hit.location).trim()) return String(hit.location).trim();
-    if (locationHint && String(locationHint).trim()) return String(locationHint).trim();
-    return null;
-};
-
-const extractApplyLink = (html, jobUrl) => {
-    const directMatch = html.match(/href=["'](\/apply\/[^"']+)["']/i);
-    if (directMatch?.[1]) return toAbsoluteUrl(directMatch[1], jobUrl) || jobUrl;
-
-    const $ = cheerioLoad(html);
-    const href =
-        $('a[href^="/apply/"]').first().attr('href') ||
-        $('a[rel="nofollow"][href*="/apply"]').first().attr('href') ||
-        $('a')
-            .filter((_, el) => $(el).text().trim().toLowerCase() === 'apply')
-            .first()
-            .attr('href') ||
-        null;
-
-    return toAbsoluteUrl(href, jobUrl) || jobUrl;
-};
-
-const extractOgImage = (html) => {
-    const m = html.match(/<meta[^>]*property=["']og:image["'][^>]*content=["']([^"']+)["'][^>]*>/i);
-    return m?.[1] ? decodeHtmlEntities(m[1]) : null;
-};
-
-const salaryFromJsonLd = (jobPosting) => {
-    const baseSalary = jobPosting?.baseSalary;
-    if (!baseSalary) return null;
-
-    const currency = baseSalary?.currency || null;
-    const min = baseSalary?.value?.minValue ?? null;
-    const max = baseSalary?.value?.maxValue ?? null;
-    const scalar = baseSalary?.value?.value ?? baseSalary?.value;
-
-    if (min != null || max != null) return formatSalaryRange({ min, max, currency });
-    if (typeof scalar === 'number') return formatSalaryRange({ min: scalar, max: null, currency });
-    if (typeof scalar === 'string') return scalar;
-    return null;
-};
-
-const parseDetailFromHtml = ({ html, url, hit, locationHint }) => {
-    const jobPosting = extractJobPostingJsonLd(html);
-    let descriptionHtml = jobPosting?.description || null;
-    let companyLogoFromHtml = null;
-
-    if (!descriptionHtml || !jobPosting?.hiringOrganization?.logo) {
-        const $ = cheerioLoad(html);
-        if (!descriptionHtml) {
-            descriptionHtml =
-                $('[class*="trix-content"]').first().html() ||
-                $('article').first().html() ||
-                null;
-        }
-        companyLogoFromHtml = $('meta[property="og:image"]').attr('content') || null;
-    }
-
-    const salaryFromListing = formatSalaryRange({
-        min: hit.salary_min,
-        max: hit.salary_max,
-        currency: hit.salary_currency || 'USD',
-    });
-
-    return {
-        title: jobPosting?.title || hit.title || null,
-        company: jobPosting?.hiringOrganization?.name || hit.company_name || null,
-        location: resolveLocation({ hit, jobPosting, locationHint }),
-        job_type: normalizeEmploymentType(jobPosting?.employmentType || hit.employment_type_id || hit.employment_type),
-        salary: salaryFromJsonLd(jobPosting) || salaryFromListing,
-        posted_at: jobPosting?.datePosted || hit.published_at_iso8601 || null,
-        description_html: descriptionHtml || null,
-        description_text: cleanHtmlToText(descriptionHtml || ''),
-        company_logo:
-            toAbsoluteUrl(jobPosting?.hiringOrganization?.logo, ORIGIN) ||
-            toAbsoluteUrl(hit.company_logo_url, ORIGIN) ||
-            toAbsoluteUrl(companyLogoFromHtml || extractOgImage(html), ORIGIN) ||
-            null,
-        apply_link: extractApplyLink(html, url),
-    };
-};
-
-const fetchDetailViaHttp = async ({ url, hit, locationHint }) => {
+const fetchListingHtml = async (listingUrl) => {
     const response = await gotScraping({
-        url,
+        url: listingUrl,
         headers: {
             'user-agent': getRandomUserAgent(),
             'accept-language': 'en-US,en;q=0.9',
             accept: 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
             referer: ORIGIN,
         },
+        useHeaderGenerator: false,
         throwHttpErrors: false,
-        timeout: { request: 15000 },
+        timeout: { request: 30000 },
         responseType: 'text',
         followRedirect: true,
-        retry: { limit: 0 },
+        retry: { limit: 1 },
     });
 
-    if (response.statusCode !== 200) return null;
+    if (response.statusCode !== 200) {
+        throw new Error(`Listing bootstrap failed with HTTP ${response.statusCode}`);
+    }
     if (looksLikeCloudflareChallengeHtml(response.body)) {
-        const error = new Error('Cloudflare challenge on detail page');
-        error.isBlocked = true;
-        throw error;
+        throw new Error('Listing bootstrap returned a Cloudflare challenge');
     }
 
-    return parseDetailFromHtml({
-        html: response.body,
-        url,
-        hit,
-        locationHint,
+    return response.body;
+};
+
+const bootstrapListingAndAlgoliaConfig = async ({ listingUrl }) => {
+    const html = await fetchListingHtml(listingUrl);
+    const data = {
+        appId: extractMetaContent(html, 'current-algolia-application-id'),
+        apiKey: extractMetaContent(html, 'current-algolia-api-key-search'),
+        indexName: extractMetaContent(html, 'current-algolia-index-post'),
+    };
+
+    if (!data.appId || !data.apiKey || !data.indexName) {
+        throw new Error('Failed to load Algolia config from listing page HTML');
+    }
+
+    return data;
+};
+
+const fetchAlgoliaPageViaHttp = async ({ config, payload, referer }) => {
+    const endpoint = `https://${config.appId.toLowerCase()}-dsn.algolia.net/1/indexes/${encodeURIComponent(config.indexName)}/query`;
+    const response = await gotScraping.post(endpoint, {
+        json: payload,
+        headers: {
+            'content-type': 'application/json',
+            'x-algolia-api-key': config.apiKey,
+            'x-algolia-application-id': config.appId,
+            origin: ORIGIN,
+            referer,
+        },
+        useHeaderGenerator: false,
+        throwHttpErrors: false,
+        timeout: { request: 30000 },
+        retry: { limit: 2 },
     });
+
+    const responseText = response.body;
+    const json = tryParseJson(responseText);
+
+    return {
+        status: response.statusCode,
+        json,
+        textSnippet: String(responseText || '').slice(0, 500),
+    };
 };
 
-const fetchDetailViaPlaywright = async ({ context, url, hit, locationHint }) => {
-    const page = await context.newPage();
-    try {
-        await page.goto(url, { waitUntil: 'domcontentloaded', timeout: 30000 });
-        await waitForCloudflareClearance(page, 10000);
-        const html = await page.content();
-        return parseDetailFromHtml({
-            html,
-            url,
-            hit,
-            locationHint,
-        });
-    } finally {
-        await page.close().catch(() => {});
-    }
-};
-
-const normalizeOutputJob = ({ hit, detail }) => {
+const normalizeOutputJob = ({ hit }) => {
     const url = toAbsoluteUrl(hit.path, ORIGIN);
     // eslint-disable-next-line no-underscore-dangle
     const tags = Array.isArray(hit._tags) ? hit._tags : [];
+    // eslint-disable-next-line no-underscore-dangle
+    const geoloc = hit._geoloc && typeof hit._geoloc === 'object' ? hit._geoloc : {};
 
     const fallbackSalary = formatSalaryRange({
         min: hit.salary_min,
@@ -530,18 +285,16 @@ const normalizeOutputJob = ({ hit, detail }) => {
 
     return {
         id: hit.objectID || null,
-        title: detail?.title || hit.title || null,
-        company: detail?.company || hit.company_name || null,
-        location: detail?.location || (String(hit.workplace_type_id || '').toLowerCase() === 'remote' ? 'Remote' : hit.location || null),
-        job_type: detail?.job_type || normalizeEmploymentType(hit.employment_type_id || hit.employment_type),
-        salary: detail?.salary || fallbackSalary,
-        posted_at: detail?.posted_at || hit.published_at_iso8601 || null,
-        description_text: detail?.description_text || null,
-        description_html: detail?.description_html || null,
-        company_logo: detail?.company_logo || toAbsoluteUrl(hit.company_logo_url, ORIGIN),
-        apply_link: detail?.apply_link || url,
+        title: hit.title || null,
+        company: hit.company_name || null,
+        location: String(hit.workplace_type_id || '').toLowerCase() === 'remote' ? 'Remote' : hit.location || null,
+        job_type: normalizeEmploymentType(hit.employment_type_id || hit.employment_type),
+        salary: fallbackSalary,
+        posted_at: hit.published_at_iso8601 || null,
+        company_logo: toAbsoluteUrl(hit.company_logo_url, ORIGIN),
+        apply_link: url,
         url,
-        source: detail ? detail.source || 'algolia+jsonld' : 'algolia-only',
+        source: 'listing-api',
         fetched_at: new Date().toISOString(),
 
         tags,
@@ -553,8 +306,43 @@ const normalizeOutputJob = ({ hit, detail }) => {
         salary_currency: hit.salary_currency || null,
         city: hit.city || null,
         country: hit.country || null,
+        country_code: hit.country_code || null,
+        country_id: hit.country_id ?? null,
+        city_id: hit.city_id ?? null,
+        state_id: hit.state_id ?? null,
+        company_id: hit.company_id ?? null,
         company_slug: hit.company_slug || null,
+        role_ids: Array.isArray(hit.role_ids) ? hit.role_ids : null,
+        location_parts: Array.isArray(hit.location_parts) ? hit.location_parts : null,
+        published_at_unix: hit.published_at_i ?? null,
+        created_at_unix: hit.created_at_i ?? null,
+        has_salary: hit.has_salary ?? null,
+        salary_interval: hit.salary_interval || null,
+        salary_min_usd: hit.salary_min_usd ?? null,
+        salary_max_usd: hit.salary_max_usd ?? null,
+        geo_lat: geoloc.lat ?? null,
+        geo_lng: geoloc.lng ?? null,
+        highlighted: hit.highlighted ?? null,
     };
+};
+
+const pruneEmptyValues = (record) =>
+    Object.fromEntries(
+        Object.entries(record).filter(([, value]) => {
+            if (value === null || value === undefined || value === '') return false;
+            if (Array.isArray(value) && value.length === 0) return false;
+            return true;
+        }),
+    );
+
+const withMissingFieldReport = (record, requiredFields) => {
+    const missingFields = requiredFields.filter((field) => {
+        const value = record[field];
+        return value === null || value === undefined || value === '' || (Array.isArray(value) && value.length === 0);
+    });
+    const cleaned = pruneEmptyValues(record);
+    if (missingFields.length > 0) cleaned.missing_fields = missingFields;
+    return cleaned;
 };
 
 await Actor.init();
@@ -570,19 +358,15 @@ try {
         startUrl,
         keyword = '',
         location = 'Remote',
-        collectDetails = true,
         results_wanted: resultsWantedRaw = 20,
         max_pages: maxPagesRaw = 3,
-        maxConcurrency: maxConcurrencyRaw = 2,
     } = input;
 
     const resultsWanted = Math.min(500, Math.max(1, Number(resultsWantedRaw) || 1));
     const maxPages = Math.max(1, Number(maxPagesRaw) || 1);
-    const maxConcurrency = Math.max(1, Number(maxConcurrencyRaw) || 1);
 
     const listingUrl = buildListingUrl({ startUrl, keyword, location });
     const searchParams = parseSearchInputsFromListingUrl(listingUrl, keyword, location);
-    const locationHint = String(location || '').trim() || null;
 
     log.info('Proxy is disabled by configuration for maximum speed and stability.');
 
@@ -594,24 +378,20 @@ try {
         algoliaReportedHits: 0,
         algoliaReportedPages: 0,
         algoliaFieldCount: 0,
-        detailHttpOk: 0,
-        detailPlaywrightOk: 0,
-        detailFailed: 0,
+        duplicateHitsSkipped: 0,
+        recordsWithMissingFields: 0,
         errors: 0,
         runtimeSeconds: 0,
     };
     runStats = stats;
 
     const startTime = Date.now();
-    const { context, close } = await createPlaywrightContext();
-    try {
-        const listingPage = await context.newPage();
+    {
         const algoliaConfig = await bootstrapListingAndAlgoliaConfig({
-            page: listingPage,
             listingUrl,
         });
         log.info(
-            `Using internal API (via Playwright): https://${algoliaConfig.appId.toLowerCase()}-dsn.algolia.net/1/indexes/${algoliaConfig.indexName}/query`,
+            `Using internal API via HTTP: https://${algoliaConfig.appId.toLowerCase()}-dsn.algolia.net/1/indexes/${algoliaConfig.indexName}/query`,
         );
 
         const collected = new Map();
@@ -623,15 +403,15 @@ try {
                 page,
             });
 
-            const algoliaResponse = await fetchAlgoliaPageViaPlaywright({
-                page: listingPage,
+            const algoliaResponse = await fetchAlgoliaPageViaHttp({
                 config: algoliaConfig,
                 payload,
+                referer: listingUrl,
             });
 
             if (algoliaResponse.status !== 200 || !algoliaResponse.json) {
                 throw new Error(
-                    `Algolia Playwright request failed (${algoliaResponse.status}): ${algoliaResponse.textSnippet}`,
+                    `Algolia HTTP request failed (${algoliaResponse.status}): ${algoliaResponse.textSnippet}`,
                 );
             }
 
@@ -648,7 +428,11 @@ try {
             for (const hit of hits) {
                 for (const key of Object.keys(hit || {})) allFieldNames.add(key);
                 if (!hit?.objectID || !hit?.path) continue;
-                if (!collected.has(hit.objectID)) collected.set(hit.objectID, hit);
+                if (collected.has(hit.objectID)) {
+                    stats.duplicateHitsSkipped += 1;
+                } else {
+                    collected.set(hit.objectID, hit);
+                }
                 if (collected.size >= resultsWanted) break;
             }
 
@@ -656,90 +440,28 @@ try {
             if (nbPages > 0 && page + 1 >= nbPages) break;
         }
 
-        await listingPage.close().catch(() => {});
-
         const hits = Array.from(collected.values()).slice(0, resultsWanted);
         recoveryHits = hits;
         stats.algoliaHitsCollected = hits.length;
         stats.algoliaFieldCount = allFieldNames.size;
 
-        const httpConcurrency = collectDetails ? Math.min(12, Math.max(4, maxConcurrency * 4)) : maxConcurrency;
-        const httpLimiter = createLimiter(httpConcurrency);
-        const browserLimiter = createLimiter(maxConcurrency);
         const batchPusher = createDatasetBatchPusher({ batchSize: DATASET_BATCH_SIZE });
         batchPusherForRecovery = batchPusher;
+        const requiredOutputFields = ['id', 'title', 'company', 'location', 'posted_at', 'url', 'apply_link'];
 
-        const settled = await Promise.allSettled(
-            hits.map((hit) =>
-                httpLimiter(async () => {
-                    const url = toAbsoluteUrl(hit.path, ORIGIN);
-                    let detail = null;
+        for (const hit of hits) {
+            const rawOutputItem = normalizeOutputJob({ hit });
+            const outputItem = withMissingFieldReport(rawOutputItem, requiredOutputFields);
+            if (outputItem.missing_fields) stats.recordsWithMissingFields += 1;
 
-                    if (collectDetails && url) {
-                        try {
-                            detail = await fetchDetailViaHttp({
-                                url,
-                                hit,
-                                locationHint,
-                            });
-                            if (detail) {
-                                detail.source = 'algolia+http-jsonld';
-                                stats.detailHttpOk += 1;
-                            }
-                        } catch (error) {
-                            if (!error?.isBlocked) {
-                                log.warning(`HTTP detail failed for ${url}: ${error.message}`);
-                            }
-                        }
-
-                        if (!detail) {
-                            try {
-                                detail = await browserLimiter(() =>
-                                    fetchDetailViaPlaywright({
-                                        context,
-                                        url,
-                                        hit,
-                                        locationHint,
-                                    }),
-                                );
-                                if (detail) {
-                                    detail.source = 'algolia+playwright-jsonld';
-                                    stats.detailPlaywrightOk += 1;
-                                } else {
-                                    stats.detailFailed += 1;
-                                }
-                            } catch (error) {
-                                stats.detailFailed += 1;
-                                stats.errors += 1;
-                                log.warning(`Playwright detail failed for ${url}: ${error.message}`);
-                            }
-                        }
-                    }
-
-                    const outputItem = normalizeOutputJob({
-                        hit,
-                        detail,
-                    });
-
-                    batchPusher.add(outputItem);
-                    stats.jobsSaved += 1;
-                }),
-            ),
-        );
-
-        for (const result of settled) {
-            if (result.status === 'rejected') {
-                stats.errors += 1;
-                log.warning(`Job task crashed: ${result.reason?.message || result.reason}`);
-            }
+            batchPusher.add(outputItem);
+            stats.jobsSaved += 1;
         }
 
         const totalPushed = await batchPusher.flush();
         if (totalPushed > 0) outputAlreadyPushed = true;
         stats.jobsSaved = Math.max(stats.jobsSaved, totalPushed);
         batchPusherForRecovery = null;
-    } finally {
-        await close();
     }
 
     stats.runtimeSeconds = (Date.now() - startTime) / 1000;
@@ -754,9 +476,8 @@ try {
     log.info(`Algolia hits collected: ${stats.algoliaHitsCollected}`);
     log.info(`Algolia fields seen: ${stats.algoliaFieldCount}`);
     log.info(`Algolia reported hits/pages: ${stats.algoliaReportedHits}/${stats.algoliaReportedPages}`);
-    log.info(`Detail via HTTP JSON-LD: ${stats.detailHttpOk}`);
-    log.info(`Detail via Playwright fallback: ${stats.detailPlaywrightOk}`);
-    log.info(`Detail failures: ${stats.detailFailed}`);
+    log.info(`Duplicate hits skipped: ${stats.duplicateHitsSkipped}`);
+    log.info(`Records with missing core fields: ${stats.recordsWithMissingFields}`);
     log.info(`Errors: ${stats.errors}`);
     log.info(`Runtime: ${stats.runtimeSeconds.toFixed(2)}s`);
     log.info('='.repeat(60));
@@ -791,12 +512,14 @@ try {
     if (!outputAlreadyPushed && recoveryHits.length > 0) {
         try {
             const fallbackItems = recoveryHits.map((hit) =>
-                normalizeOutputJob({
-                    hit,
-                    detail: null,
-                }),
+                withMissingFieldReport(
+                    normalizeOutputJob({
+                        hit,
+                    }),
+                    ['id', 'title', 'company', 'location', 'posted_at', 'url', 'apply_link'],
+                ),
             );
-            await Dataset.pushData(fallbackItems);
+            await Actor.pushData(fallbackItems);
             outputAlreadyPushed = true;
             if (runStats) {
                 runStats.jobsSaved = fallbackItems.length;
